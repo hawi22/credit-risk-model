@@ -1,3 +1,5 @@
+from sklearn.cluster import KMeans
+import os
 import pandas as pd
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -55,54 +57,63 @@ def build_processing_pipeline(categorical_cols, numerical_cols):
     return full_pipeline
 
 if __name__ == "__main__":
-    from sklearn.cluster import KMeans
-    
-    # 1. Load Data
+    # 1. Load Raw Data
     df = pd.read_csv('data/raw/data.csv')
     
-    # 2. Task 4: Create Proxy Target (RFM Clustering)
-    print("Calculating RFM and Proxy Target...")
+    # --- TASK 4: PROXY TARGET ENGINEERING ---
+    print("Step 1: Calculating RFM metrics...")
     df['TransactionStartTime'] = pd.to_datetime(df['TransactionStartTime'])
     snapshot_date = df['TransactionStartTime'].max()
     
+    # Calculate Recency, Frequency, Monetary
     rfm = df.groupby('CustomerId').agg({
         'TransactionStartTime': lambda x: (snapshot_date - x.max()).days,
         'TransactionId': 'count',
         'Amount': 'sum'
-    }).rename(columns={'TransactionStartTime': 'Recency', 'TransactionId': 'Frequency', 'Amount': 'Monetary'})
+    }).rename(columns={
+        'TransactionStartTime': 'Recency', 
+        'TransactionId': 'Frequency', 
+        'Amount': 'Monetary'
+    })
 
-    # Scale and Cluster
-    scaler = StandardScaler()
-    rfm_scaled = scaler.fit_transform(rfm)
+    # Pre-process (Scale) RFM for Clustering
+    scaler_rfm = StandardScaler()
+    rfm_scaled = scaler_rfm.fit_transform(rfm)
+
+    # Cluster Customers into 3 groups
+    print("Step 2: Clustering customers...")
     kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
     rfm['Cluster'] = kmeans.fit_predict(rfm_scaled)
     
-    # Assign Risk: Cluster with lowest average Monetary is 'High Risk' (1)
-    bad_cluster = rfm.groupby('Cluster')['Monetary'].mean().idxmin()
-    rfm['is_high_risk'] = (rfm['Cluster'] == bad_cluster).astype(int)
+    # Define High-Risk: Cluster with lowest average Monetary/Frequency
+    # We analyze clusters to find the "least engaged"
+    cluster_stats = rfm.groupby('Cluster').agg({'Monetary':'mean', 'Frequency':'mean'})
+    bad_cluster = cluster_stats['Monetary'].idxmin()
     
-    # 3. Join Target back to Main Data
+    rfm['is_high_risk'] = (rfm['Cluster'] == bad_cluster).astype(int)
+    print(f"High-risk label assigned to Cluster {bad_cluster}")
+
+    # Integrate back to main dataframe
     df = df.merge(rfm[['is_high_risk']], on='CustomerId', how='left')
     
-    # 4. Run Feature Engineering Pipeline
+    # --- TASK 3: FEATURE PIPELINE ---
+    print("Step 3: Running feature engineering pipeline...")
     num_features = ['Amount', 'Value']
     cat_features = ['ProviderId', 'ProductId', 'ProductCategory', 'ChannelId', 'PricingStrategy']
     
     pipeline = build_processing_pipeline(cat_features, num_features)
     X_processed = pipeline.fit_transform(df)
-    y = df['is_high_risk'].values
     
-    # 5. Save Processed Data
-    # Combine X and y into one dataframe for training
+    # Create final dataframe
     final_df = pd.DataFrame(X_processed)
-    final_df['target'] = y
+    final_df['is_high_risk'] = df['is_high_risk'].values
     
-    import os
+    # Save the deliverable
     os.makedirs('data/processed', exist_ok=True)
     final_df.to_csv('data/processed/processed_data.csv', index=False)
     
-    print(f"Final Dataset Saved: data/processed/processed_data.csv")
-    print(f"Target Distribution: \n{rfm['is_high_risk'].value_counts()}")
+    print("\nDeliverable Complete: data/processed/processed_data.csv")
+    print(f"Target Distribution:\n{final_df['is_high_risk'].value_counts()}")
 
 def create_proxy_target(df):
     """Calculates RFM and assigns a risk label using K-Means."""
